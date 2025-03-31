@@ -88,8 +88,7 @@ class Control(BaseAPIClass):
             pre_post = 'pre'
 
         if isinstance(time, int):
-            steps = self._step_controls[pre_post].keys()
-            if time in steps:
+            if time in self._step_controls[pre_post]:
                 self._step_controls[pre_post][time] = \
                     control_operation @ self._step_controls[pre_post][time]
             else:
@@ -160,14 +159,12 @@ class Control(BaseAPIClass):
                 pre_control = self._time_controls['pre'][t] @ pre_control
 
         # -- pre step controls --
-        steps = self._step_controls['pre'].keys()
-        if step in steps:
+        if step in self._step_controls['pre']:
             pre_control_bool = True
             pre_control = self._step_controls['pre'][step] @ pre_control
 
         # -- post step controls --
-        steps = self._step_controls['post'].keys()
-        if step in steps:
+        if step in self._step_controls['post']:
             post_control_bool = True
             post_control = self._step_controls['post'][step] @ post_control
 

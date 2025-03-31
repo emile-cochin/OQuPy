@@ -25,16 +25,17 @@ from oqupy.system import TimeDependentSystemWithField
 from oqupy.config import NpDtype, INTEGRATE_EPSREL, SUBDIV_LIMIT
 from oqupy.control import Control
 from oqupy.dynamics import Dynamics, MeanFieldDynamics
-from oqupy.process_tensor import BaseProcessTensor
+from oqupy.process_tensor import BaseProcessTensor, TTInvariantProcessTensor
 from oqupy.system import BaseSystem, System, TimeDependentSystem
 from oqupy.system import ParameterizedSystem
 from oqupy.system import MeanFieldSystem
 from oqupy.operators import left_super, right_super
 from oqupy.util import check_convert, check_isinstance, check_true
 from oqupy.util import get_progress
-
+from oqupy.util import Memoize
 
 Indices = Union[int, slice, List[Union[int, slice]]]
+
 
 # -- compute dynamics ---------------------------------------------------------
 
@@ -47,10 +48,11 @@ def compute_dynamics(
         process_tensor: Optional[Union[List[BaseProcessTensor],
                                        BaseProcessTensor]] = None,
         control: Optional[Control] = None,
-        record_all: Optional[bool] = True,
+        record_all: Optional[Union[bool, list]] = True,
         subdiv_limit: Optional[int] = SUBDIV_LIMIT,
         liouvillian_epsrel: Optional[float] = INTEGRATE_EPSREL,
-        progress_type: Optional[Text] = None) -> Dynamics:
+        progress_type: Optional[Text] = None,
+        ttidc: Optional[bool] = True) -> Dynamics:
     """
     Compute the system dynamics for a given system Hamiltonian, accounting
     (optionally) for interaction with an environment using one or more
@@ -102,6 +104,15 @@ def compute_dynamics(
         process_tensors, control, record_all, hs_dim = parsed_parameters
     num_envs = len(process_tensors)
 
+    if record_all is True:
+        records = range(num_steps+1)
+    elif record_all is False:
+        records = []
+    else:
+        records = record_all
+        record_all = False
+    ttidc = ttidc and all(isinstance(pt, TTInvariantProcessTensor) for pt in process_tensors) and isinstance(system, System)
+    
     # -- prepare propagators --
     propagators = system.get_propagators(dt, start_time, subdiv_limit,
                                        liouvillian_epsrel)
@@ -128,10 +139,21 @@ def compute_dynamics(
     prog_bar = get_progress(progress_type)(num_steps, title)
     prog_bar.enter()
 
-    for step in range(num_steps+1):
+    stepiter = iter(range(num_steps+1))
+    for step in stepiter:
+
         # -- apply pre measurement control --
         pre_measurement_control, post_measurement_control = controls(step)
 
+        # -- Use exponentiation by squaring type of algorithm if ttidc is True
+        if ttidc and pre_measurement_control is None and post_measurement_control is None and step > 0 and step not in records:
+            init_step = step
+            while pre_measurement_control is None and post_measurement_control is None and step not in records:
+                step = next(stepiter)
+                pre_measurement_control, post_measurement_control = controls(step)
+            nfree = step - init_step
+            current_node, current_edges = _apply_tti_powers(current_node, current_edges, process_tensors, propagators(step), nfree=nfree)
+                
         if pre_measurement_control is not None:
             current_node, current_edges = _apply_system_superoperator(
                 current_node, current_edges, pre_measurement_control)
@@ -140,7 +162,7 @@ def compute_dynamics(
             break
 
         # -- extract current state -- update field --
-        if record_all:
+        if step in records:
             caps = _get_caps(process_tensors, step)
             state_tensor = _apply_caps(current_node, current_edges, caps)
             state = state_tensor.reshape(hs_dim, hs_dim)
@@ -165,10 +187,11 @@ def compute_dynamics(
             current_node, current_edges, second_half_prop)
 
     # -- extract last state --
-    caps = _get_caps(process_tensors, step)
-    state_tensor = _apply_caps(current_node, current_edges, caps)
-    final_state = state_tensor.reshape(hs_dim, hs_dim)
-    states.append(final_state)
+    if step in records:
+        caps = _get_caps(process_tensors, step)
+        state_tensor = _apply_caps(current_node, current_edges, caps)
+        final_state = state_tensor.reshape(hs_dim, hs_dim)
+        states.append(final_state)
 
     prog_bar.update(num_steps)
     prog_bar.exit()
@@ -177,7 +200,7 @@ def compute_dynamics(
     if record_all:
         times = start_time + np.arange(len(states))*dt
     else:
-        times = [start_time + len(states)*dt]
+        times = [start_time + step*dt for step in records]
 
     return Dynamics(times=list(times),states=states)
 
@@ -689,15 +712,53 @@ def _apply_pt_mpos(current_node, current_edges, pt_mpos):
     for i, pt_mpo in enumerate(pt_mpos):
         if pt_mpo is None:
             continue
-        pt_mpo_node = tn.Node(pt_mpo)
-        new_bond_edge = pt_mpo_node[1]
-        new_sys_edge = pt_mpo_node[3]
-        current_edges[i] ^ pt_mpo_node[0]
-        current_edges[-1] ^ pt_mpo_node[2]
-        current_node = current_node @ pt_mpo_node
-        current_edges[i] = new_bond_edge
-        current_edges[-1] = new_sys_edge
+        if len(pt_mpo.shape) == 3:
+            pt_mpo_node = tn.Node(pt_mpo)
+            current_node[i] ^ pt_mpo_node[0]
+            current_node = tn.Node(np.diagonal((current_node @ pt_mpo_node).get_tensor(), axis1=-3, axis2=-1))
+#             current_node = tn.Node(np.diagonal(np.tensordot(current_node.get_tensor(), pt_mpo, axes=[0, 0]), axis1=-3, axis2=-1))
+            current_edges = [current_node[j] for j in range(len(current_node.shape))]
+        else:
+            pt_mpo_node = tn.Node(pt_mpo)
+            new_bond_edge = pt_mpo_node[1]
+            new_sys_edge = pt_mpo_node[3]
+            current_edges[i] ^ pt_mpo_node[0]
+            current_edges[-1] ^ pt_mpo_node[2]
+            current_node = current_node @ pt_mpo_node
+            current_edges[i] = new_bond_edge
+            current_edges[-1] = new_sys_edge
     return current_node, current_edges
+
+def _apply_tti_powers(current_node, current_edges, pts, system_propagators, nfree):
+    """
+    Apply TTInvariant PT-MPOs to propagate over `nfree` steps
+    ToDo: add function for multiple TTInvariantProcessTensor
+    """
+    # -- Compute which powers of 2 are going to be used for the exponentiation by squaring algorithm
+    powers = [i for i, d in enumerate(f'{nfree:b}'[::-1]) if d == '1']
+    for power in powers:
+        powernode = _get_tti_powers(power, pts, system_propagators, memid=f'{power}#'+''.join(pt.uuid for pt in pts))
+        current_node, current_edges = _apply_pt_mpos(current_node, current_edges, [powernode])
+    return current_node, current_edges
+
+@Memoize
+def _get_tti_powers(power, pts, system_propagators):
+    """
+    ToDo: add function for multiple TTInvariantProcessTensor
+    """
+    if power == 0:
+        first_step, second_step = system_propagators
+        pt_mpo = pts[0].get_mpo_tensor(1)
+        if len(pts) > 1:
+            raise NotImplementedError("Divide and Conquer exponentiation only available for a unique process tensor for now.")
+        if len(pt_mpo.shape) == 3:
+            return np.moveaxis(np.tensordot(np.einsum('ij,jk->ikj', first_step, second_step), pt_mpo, axes=[2, 2]), [2, 3, 0, 1], [0, 1, 2, 3])
+        if len(pt_mpo.shape) == 4:
+            return np.moveaxis(np.tensordot(np.tensordot(first_step, pt_mpo, axes=[1, 3]), second_step, axes=[3, 0]), [1, 2, 0], [0, 1, 2])
+        raise IndexError
+
+    pp = _get_tti_powers(power-1, pts, system_propagators, memid=f'{power-1}#'+''.join(pt.uuid for pt in pts))
+    return np.swapaxes(np.tensordot(pp, pp, axes=[(1, 3), (0, 2)]), 1, 2)
 
 def _apply_derivative_pt_mpos(current_node,current_edges,pt_mpos):
     r"""
@@ -796,8 +857,10 @@ def compute_correlations_nt(
         ops_order: List[Text],
         initial_state: Optional[ndarray] = None,
         start_time: Optional[float] = 0.0,
+        max_step: Optional[int] = None,
         dt: Optional[float] = None,
         progress_type: Text = None,
+        ttidc: Optional[bool] = True,
     ) -> Tuple[List[ndarray], ndarray]:
     r"""
     Compute n-time correlations for a given system Hamiltonian.
@@ -875,8 +938,8 @@ def compute_correlations_nt(
 
 #Input parsing; ensures that specified times that are not an integer multiple
 #of dt are assigned the closest integer multiple.------------------------------
-
-    max_step = len(process_tensor)
+    if max_step is None:
+        max_step = len(process_tensor)
 
     ops_times_=[]
     ret_times=[] #These are the times returned by the function
@@ -899,6 +962,7 @@ def compute_correlations_nt(
         "process_tensor": process_tensor,
         "initial_state": initial_state,
         "start_time": start_time,
+        "ttidc": ttidc,
         }
 
 #Schedule determines in what order all the correlations are calculated.-------
@@ -949,6 +1013,7 @@ def _compute_ordered_nt_correlations(
         initial_state: Optional[ndarray] = None,
         start_time: Optional[float] = 0.0,
         dt: Optional[float] = None,
+        ttidc: Optional[bool] = True,
     ) -> Tuple[ndarray]:
     """
     Compute ordered system correlations for a given system Hamiltonian.
@@ -984,9 +1049,11 @@ def _compute_ordered_nt_correlations(
         initial_state=initial_state,
         dt=dt,
         num_steps=max_step,
-        progress_type='silent')
+        progress_type='silent',
+        record_all=last_times,
+        ttidc=ttidc)
     _, corr = dynamics.expectations(operators[-1])
-    ret_correlations = corr[last_times]
+    ret_correlations = corr
     return ret_correlations
 
 def _schedule_nt_correlations(ops_times):

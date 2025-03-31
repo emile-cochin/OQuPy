@@ -293,3 +293,22 @@ def get_progress(progress_type: Text = None) -> BaseProgress:
         "Unknown progress_type='{}', know are {}".format(
             progress_type, PROGRESS_DICT.keys())
     return PROGRESS_DICT[progress_type]
+
+# -- Cache only using parts of the function input --------------------------------------------------------------
+class Memoize:
+    """@Memoize decorator that adds the kwarg `memid` to a function to allow it to cache the output
+    of the call by assigning it to a dictionary key of value `memid` (which has to be hashable)."""
+    def __init__(self, func):
+        self.func = func
+        self.memo = {}
+
+    def __call__(self, *args, **kwargs):
+        memid = kwargs.pop('memid', None)
+        if memid is None:
+            raise KeyError("memid is missing")
+        if not memid in self.memo:
+            self.memo[memid] = self.func(*args, **kwargs)
+        return self.memo[memid]
+
+    def clear_cache(self):
+        self.memo = {}

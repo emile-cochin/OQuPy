@@ -21,6 +21,7 @@ framework and efficient characterization*, Phys. Rev. A 97, 012127 (2018).
 
 from abc import ABC, abstractmethod
 import os
+import uuid
 import tempfile
 from typing import Optional, Text, Union
 import warnings
@@ -261,12 +262,14 @@ class SimpleProcessTensor(BaseProcessTensor):
             transform_in: Optional[ndarray] = None,
             transform_out: Optional[ndarray] = None,
             name: Optional[Text] = None,
-            description: Optional[Text] = None) -> None:
+            description: Optional[Text] = None,
+            opti: Optional[bool] = False) -> None:
         """Constructor of SimpleProcessTensor. """
         self._initial_tensor = None
         self._mpo_tensors = []
         self._cap_tensors = []
         self._lam_tensors = []
+        self.opti = opti
         super().__init__(
             hilbert_space_dimension,
             dt,
@@ -347,7 +350,7 @@ class SimpleProcessTensor(BaseProcessTensor):
         if step >= length or step < 0:
             raise IndexError("Process tensor index out of bound. ")
         tensor = self._mpo_tensors[step]
-        if len(tensor.shape) == 3:
+        if len(tensor.shape) == 3 and (self.opti is False or self._transform_in is not None or self._transform_out is not None):
             #tensor = util.create_delta(tensor, [0, 1, 2, 2])
             tensor = create_delta_lastindex(tensor)
         if transformed is False:
@@ -453,8 +456,10 @@ class TTInvariantProcessTensor(BaseProcessTensor):
             transform_in: Optional[ndarray] = None,
             transform_out: Optional[ndarray] = None,
             name: Optional[Text] = None,
-            description: Optional[Text] = None) -> None:
+            description: Optional[Text] = None,
+            opti: Optional[bool] = False) -> None:
         """Constructor of SimpleProcessTensor. """
+        self.uuid = str(uuid.uuid4())[:14]
         self._initial_tensor = None
         hilbert_space_dimension=tebd.s_dim
         dt=tebd.delta
@@ -465,7 +470,6 @@ class TTInvariantProcessTensor(BaseProcessTensor):
         self._mpo_tensor=np.transpose(tebd.f[:,:-1,:],[0,2,1]) # drop the extra component and reorder the rank 3 tensor to match OQuPy
         self._first_mpo_tensor=ncon([tebd.v_l,self._mpo_tensor],[[1],[1,-1,-2]]) # construct first tensor in mpo
         self._first_mpo_tensor.shape=tuple([1]+list(self._first_mpo_tensor.shape))
-        self._mpo_tensor = create_delta_lastindex(self._mpo_tensor) 
         self._first_mpo_tensor = create_delta_lastindex(self._first_mpo_tensor)
 
         tensor=self._first_mpo_tensor
@@ -476,13 +480,14 @@ class TTInvariantProcessTensor(BaseProcessTensor):
             tensor = np.dot(tensor, transform_out)
         self._first_mpo_tensor=tensor
 
-        tensor=self._mpo_tensor
-        if transform_in is not None:
-            tensor = np.dot(np.moveaxis(tensor, -2, -1),transform_in.T)
-            tensor = np.moveaxis(tensor, -1, -2)
-        if transform_out is not None:
-            tensor = np.dot(tensor, transform_out)
-        self._mpo_tensor=tensor
+        if not (transform_in is None and transform_out is None and opti):
+            tensor = create_delta_lastindex(self._mpo_tensor) 
+            if transform_in is not None:
+                tensor = np.dot(np.moveaxis(tensor, -2, -1),transform_in.T)
+                tensor = np.moveaxis(tensor, -1, -2)
+            if transform_out is not None:
+                tensor = np.dot(tensor, transform_out)
+            self._mpo_tensor=tensor
 
         self._cap_tensor=tebd.v_r
 
@@ -527,8 +532,13 @@ class TTInvariantProcessTensor(BaseProcessTensor):
             transformed: Optional[bool] = True) -> ndarray:
         """
         Get the MPO tensor for time step `step`.
-
-        The axes correspond to the following legs:
+        
+        If the TTI-PT is diagonal in the Liouville space (in the case where the coupling operator is diagonal),
+        the axes correspond to the following legs:
+            [0] ... past bond leg,
+            [1] ... future bond leg,
+            [2] ... system leg.
+        Otherwise the axes correspond to these legs (this format can be enforced by setting the transformation to the identity):
             [0] ... past bond leg,
             [1] ... future bond leg,
             [2] ... input (from system) leg,

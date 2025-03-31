@@ -3,14 +3,14 @@
 # Original code from https://github.com/val-link/iTEBD-TEMPO.git
 # Modified by Paul Eastham (easthamp@tcd.ie) so that the iTEBD-TEMPO class uses the OQuPy BathCorrelations class 
 # to define the bath correlations rather than the bath correlation function itself. 
-
+from typing import Text
 
 import numpy as np
 from scipy.integrate import dblquad
 from scipy.linalg import expm, norm, svd
 from scipy.sparse.linalg import eigs
 from typing import Callable, Optional
-from tqdm import tqdm
+from oqupy.util import get_progress
 from ncon import ncon  # ncon performs better than np.einsum
 
 from oqupy.bath_correlations import BaseCorrelations
@@ -75,7 +75,7 @@ class BathCorrelation():
 
         self.oqupybc=oqupybc
 
-    def compute_eta(self, n: int, delta: float) -> np.ndarray:
+    def compute_eta(self, n: int, delta: float, progress_type: Optional[Text] = None) -> np.ndarray:
         """
         Computes the discretized bath correlation function (eta) for n time steps delta.
         :param n: Number of time steps.
@@ -83,23 +83,27 @@ class BathCorrelation():
         :return: Discretized bath correlation function.
         """
 
+        prog_bar = get_progress(progress_type)(n, '--> Computing eta values:')
+        prog_bar.enter()
+
         eta = np.zeros(n, dtype=np.complex128)
         eta[0] = self.oqupybc.correlation_2d_integral(delta,0.0,shape='upper-triangle')
         #eta[0] += dblquad(lambda s, t: np.real(self.bcf(t - s)), 0, delta, lambda t: 0, lambda t: t)[0]
         #eta[0] += dblquad(lambda s, t: np.imag(self.bcf(t - s)), 0, delta, lambda t: 0, lambda t: t)[0] * 1j
-
+        prog_bar.update(1) 
         for k in range(1, n):
             eta[k] = self.oqupybc.correlation_2d_integral(delta,k*delta)
             #eta[k] += dblquad(lambda s, t: np.real(self.bcf(t - s)), k * delta, (k + 1) * delta, 0, delta)[0]
             #eta[k] += dblquad(lambda s, t: np.imag(self.bcf(t - s)), k * delta, (k + 1) * delta, 0, delta)[0] * 1j
-
+            prog_bar.update(k+1)
+        prog_bar.exit()
         return eta
 
 
 class iTEBD_TEMPO_oqupy():
     """ A class to compute and approximate the influence functional unsing iTEBD-TEMPO and compute dynamics. """
 
-    def __init__(self, s_vals: np.ndarray, delta: float, bath_correlations: BaseCorrelations, n_c: int):
+    def __init__(self, s_vals: np.ndarray, delta: float, bath_correlations: BaseCorrelations, n_c: int, progress_type: Optional[Text] = None):
         """
         :param s_vals: Real eigenvalues of the system-bath coupling operator.
         :param delta: time step for Trotter splitting.
@@ -107,6 +111,7 @@ class iTEBD_TEMPO_oqupy():
         :param n_c: Memory cutoff. Should be chosen large enough.
         """
 
+        self.progress_type = progress_type
         self.n_c = n_c
         self.n_c_eff = n_c
         self.s_vals = s_vals
@@ -114,7 +119,7 @@ class iTEBD_TEMPO_oqupy():
         self.nu_dim = self.s_vals.size ** 2 + 1
         self.bcf = BathCorrelation(bath_correlations)
         self.delta = delta
-        self.eta = self.bcf.compute_eta(self.n_c, delta)
+        self.eta = self.bcf.compute_eta(self.n_c, delta, self.progress_type)
         self.s_diff = np.empty((self.nu_dim - 1), dtype=np.complex128)
         self.s_sum = np.empty((self.nu_dim - 1), dtype=np.complex128)
         for nu in range(self.nu_dim - 1):
@@ -141,7 +146,10 @@ class iTEBD_TEMPO_oqupy():
         sBA = np.ones((1))
         rank_is_one = True
 
-        for k in tqdm(range(1, self.n_c + 1), desc='building influence functional'):
+        prog_bar = get_progress(self.progress_type)(self.n_c, '--> Building influence functional:')
+        prog_bar.enter()
+
+        for k in range(1, self.n_c + 1):
             i_tens = np.exp(-self.eta[self.n_c - k].real * np.outer(self.s_diff, self.s_diff) - 1j * self.eta[self.n_c - k].imag * np.outer(self.s_sum, self.s_diff))
 
             if k == self.n_c:
@@ -155,7 +163,7 @@ class iTEBD_TEMPO_oqupy():
                 A, sAB, B, sBA = iTEBD_apply_gate(gate, A, sAB, B, sBA, rank, rtol=rtol)
 
             if rank_is_one:
-                if np.alltrue([sAB.shape[0] == 1, sAB.shape[-1] == 1, sBA.shape[0] == 1, sBA.shape[-1] == 1]):
+                if np.all([sAB.shape[0] == 1, sAB.shape[-1] == 1, sBA.shape[0] == 1, sBA.shape[-1] == 1]):
                     # reset to initial mps if rank is still one
                     sAB = np.ones((1))
                     sBA = np.ones((1))
@@ -166,6 +174,8 @@ class iTEBD_TEMPO_oqupy():
                     self.n_c_eff = self.n_c - k + 1
                     if k == 1:
                         print('Warning: the memory cutoff n_c may be too small for the given rtol value. The algorithm may become unstable and inaccurate. It is recommended to increase n_c until this message does no longer appear.')
+            prog_bar.update(k)
+        prog_bar.exit()
         self.f = np.squeeze(ncon([np.diag(sAB), B, np.diag(sBA), A], [[-1, 1], [1, -2, 2], [2, 3], [3, -3, -4]]))
 
         if sAB.shape[0] == 1:
@@ -210,7 +220,7 @@ class iTEBD_TEMPO_oqupy():
         aim = np.concatenate((np.flip(self.eta[:n].imag), np.zeros(n)))
         return np.exp(-np.dot(s_diff_path, np.convolve(are, s_diff_path, 'valid')[:n]) - 1j * np.dot(s_diff_path, np.convolve(aim, s_sum_path, 'valid')[:n]))
 
-    def evolve(self, h_s: np.ndarray, rho_0: np.ndarray, n: int) -> np.ndarray:
+    def evolve(self, h_s: np.ndarray, rho_0: np.ndarray, n: int, progress_type: Optional[Text] = None) -> np.ndarray:
         """
         Compute the time evolution for n time steps.
 
@@ -230,10 +240,15 @@ class iTEBD_TEMPO_oqupy():
 
         evol_tens = ncon([self.f[:, :-1, :], u], [[-1, 2, -3], [-2, 2, -4]])
         state = ncon([self.v_l, rho_0.flatten()], [[-2], [-3]])
+        
+        prog_bar = get_progress(progress_type if progress_type is not None else self.progress_type)(n, '--> Time evolution running:')
+        prog_bar.enter()
 
-        for i in tqdm(range(n), desc='time evolution running'):
+        for i in range(n):
             state = ncon([state, evol_tens], [[1, 2], [1, 2, -2, -3]])
             rho_t[i + 1] = ncon([self.v_r, state], [[1], [1, -1]]).reshape(rho_0.shape)
+            prog_bar.update(i+1)
+        prog_bar.exit()
         return rho_t
 
     def steadystate(self, h_s: np.ndarray) -> np.ndarray:
