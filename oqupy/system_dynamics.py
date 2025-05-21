@@ -13,12 +13,14 @@
 Module for various applications involving contractions of the process tensor.
 """
 
-from typing import List, Optional, Text, Tuple, Union
+from typing import List, Optional, Text, Tuple, Union, Callable
 import warnings
 
 from itertools import product
 import numpy as np
 from numpy import ndarray
+import scipy as sp
+from math import prod as math_prod
 import tensornetwork as tn
 from oqupy.system import TimeDependentSystemWithField
 
@@ -717,6 +719,10 @@ def _apply_pt_mpos(current_node, current_edges, pt_mpos):
             current_node[i] ^ pt_mpo_node[0]
             current_node = tn.Node(np.diagonal((current_node @ pt_mpo_node).get_tensor(), axis1=-3, axis2=-1))
 #             current_node = tn.Node(np.diagonal(np.tensordot(current_node.get_tensor(), pt_mpo, axes=[0, 0]), axis1=-3, axis2=-1))
+#             current_node_tensor = current_node.get_tensor()
+#             shape = current_node_tensor.shape
+#             current_node = tn.Node(np.einsum('ijk,ilj->ljk', current_node_tensor.reshape(shape[0], shape[1]//4, 4), pt_mpo).reshape(shape))
+
             current_edges = [current_node[j] for j in range(len(current_node.shape))]
         else:
             pt_mpo_node = tn.Node(pt_mpo)
@@ -846,6 +852,166 @@ def _apply_derivative_pt_mpos(current_node,current_edges,pt_mpos):
 
     return current_node,current_edges
 
+# -- compute n-time correlations diagonalising TTInvariantProcessTensor -------
+
+
+def close_loop(opener, sysleg, closer):
+    if len(opener.shape) == 1:
+        return opener @ closer @ sysleg
+    if len(closer.shape) == 1:
+        return closer @ opener @ sysleg
+    return np.tensordot(closer, opener @ sysleg, axes=2)
+
+def compute_correlations_nt_tti_analytic(
+        system: BaseSystem,
+        process_tensor: TTInvariantProcessTensor,
+        operators: List[ndarray],
+        var_times: List[bool],
+        ops_order: List[Text],
+        eigen_k: Optional[int] = None,
+        eigen_method: Optional[Text] = "SR",
+        return_pairs: Optional[bool] = False,
+        coef_cutoff: Optional[float] = None,
+        k_cutoff: Optional[int] = None,
+        fourier_transform: Optional[bool] = False,
+        initial_state: Optional[ndarray] = None,
+        start_time: Optional[float] = 0.0,
+        progress_type: Optional[Text] = None,
+        ) -> Callable[float, float]:
+    r"""
+    Compute n-time correlations for a given system Hamiltonian
+
+    Times may be specified with ...
+    This code assumes that specified times are time-ordered;
+    """
+
+    assert isinstance(system, BaseSystem)
+    assert isinstance(process_tensor, TTInvariantProcessTensor)
+    dim = system.dimension
+    assert process_tensor.hilbert_space_dimension == dim
+
+    for op in operators:
+        assert op.shape == (dim,dim)
+
+    assert process_tensor.dt is not None, "It is necessary to specify" \
+            + "time step `dt` because the given tensor has none."
+    dt_ = process_tensor.dt
+
+    #Check that lengths of the ops_order, ops_times and dip_ops lists are equal
+    ops_order = [order == "left" for order in ops_order if order in ("left", "right")]
+    assert len(operators) == len(ops_order) == len(var_times), \
+        "Lengths of the lists operators, ops_order and var_times did not match."
+    
+    assert initial_state.shape == (dim, dim)
+    initial_state = initial_state.flatten()
+    
+    # compute the system operators that are going to be inserted at each step
+    num_ops = np.diff([0]+[i for i, x in enumerate(var_times+[True]) if x]) # computes how many super_operators have to be inserted between two projectors
+    super_operators = [left_super(op) if order else right_super(op) for order, op in zip(ops_order, operators)] 
+    
+    super_operators_iter = iter(super_operators+[None])
+    sysleg = initial_state if num_ops[0] == 0 else initial_state @ next(super_operators_iter)
+    syslegs = []
+    for n in num_ops:
+        for i in range(n-1):
+            sysleg = next(super_operators_iter) @ sysleg
+        syslegs.append(sysleg.copy())
+        sysleg = next(super_operators_iter)
+    syslegs[-1] = syslegs[-1].T @ np.eye(dim).flatten()
+
+    system_propagators = system.get_propagators(dt_, start_time, SUBDIV_LIMIT, INTEGRATE_EPSREL)(0)
+    syspt_tensor = _get_tti_powers(0, [process_tensor], system_propagators, memid=f'0#{process_tensor.uuid}').transpose(0, 2, 1, 3)
+    syspt_shape = syspt_tensor.shape
+    syspt_tensor = syspt_tensor.reshape(syspt_shape[0]*syspt_shape[1], syspt_shape[0]*syspt_shape[1])
+    
+    if eigen_k is None:
+        eigvals, eigvecs = sp.linalg.eig(syspt_tensor)
+        eiginv = sp.linalg.inv(eigvecs)
+    else:
+        assert isinstance(eigen_k, int) and eigen_k > 0, "eigen_k should be a strictly positive integer"
+        # compute right eigenvectors
+        eigvals, eigvecs = sp.sparse.linalg.eigs(syspt_tensor, k=eigen_k, which=eigen_method)
+        args = (-np.abs(eigvals)).argsort()
+        eigvals, eigvecs = eigvals[args], eigvecs[:, args]
+
+        # compute left eigenvectors
+        eigvals_l, eigvecs_l = sp.sparse.linalg.eigs(syspt_tensor.T, k=eigen_k, which=eigen_method)
+        args = (-np.abs(eigvals_l)).argsort()
+        eigvals_l, eigvecs_l = eigvals_l[args], eigvecs_l[:, args]
+        assert np.allclose(eigvals_l, eigvals), "Issue with the eigenvalue decomposition, " \
+                "try using another eigen_method or eigen_k."
+        eiginv = np.array([eigvecs_l[:, i]/(eigvecs_l[:, i] @ eigvecs[:, i]) for i in range(eigen_k)])
+        
+    eiginv = eiginv.reshape(len(eigvals), syspt_shape[0], syspt_shape[1])
+    eigvecs = eigvecs.T.reshape(len(eigvals), syspt_shape[0], syspt_shape[1])
+
+    if coef_cutoff is not None or k_cutoff is not None:
+        print("Optimizing...")
+        if sum(var_times) == 1:
+            projectors = enumerate(zip(eigvals, eigvecs, eiginv))
+            num_steps = len(eigvals)
+        elif sum(var_times) == 2:
+            starters = []
+            finals = []
+            for evec, einvec in zip(eigvecs, eiginv):
+                starters.append(np.abs(close_loop(process_tensor._tebd.v_l, syslegs[0], evec))) #*np.linalg.norm(evec @ Osqrt)))
+                finals.append(np.abs(close_loop(einvec, syslegs[-1], process_tensor._tebd.v_r))) #*np.linalg.norm(eiginv @ Osqrt)))
+#             return (eigvals, starters, finals)
+            if k_cutoff is not None:
+                sortidx = np.union1d(np.argsort(-np.abs(starters))[:k_cutoff], np.argsort(-np.abs(finals))[:k_cutoff])
+                eigvals, eigvecs, eiginv = eigvals[sortidx], eigvecs[sortidx], eiginv[sortidx]
+                projectors = enumerate(product(zip(eigvals, eigvecs, eiginv), repeat=sum(var_times)))
+                num_steps = len(eigvals)**sum(var_times)
+            else:
+                indices = np.argwhere(np.outer(starters, finals) > coef_cutoff)
+                projectors = enumerate(((eigvals[k], eigvecs[k], eiginv[k]) for k in idx) for idx in indices) 
+                num_steps = len(indices)
+        else:
+            raise NotImplementedError
+    else:
+        projectors = enumerate(product(zip(eigvals, eigvecs, eiginv), repeat=sum(var_times)))
+        num_steps = len(eigvals)**sum(var_times)
+
+    coefs = []
+    lambdas = []
+    progress = get_progress(progress_type)
+    title = "--> Compute correlations:"
+    with progress(num_steps, title) as prog_bar:
+        prog_bar.update(0)
+        
+        for step, projector_vecs in projectors:
+            prog_bar.update(step)
+            sysleg_iter = iter(syslegs)
+#             coef = 1.
+            coefi = []
+            lambdai = []
+            opener = process_tensor._tebd.v_l
+            for li, evec, einvec in projector_vecs:
+                lambdai.append(li)
+                # close
+                coefi.append(close_loop(opener, next(sysleg_iter), evec))
+                # open
+                opener = einvec
+
+            coefi.append(close_loop(opener, next(sysleg_iter), process_tensor._tebd.v_r))
+            coefs.append(coefi)
+            lambdas.append(lambdai)
+
+        prog_bar.update(num_steps)
+    if coef_cutoff is None:
+        coef_eigvals_pairs = list(zip(coefs, lambdas))
+    else:
+        coef_eigvals_pairs = list(filter(lambda ceig: np.abs(ceig[0]) > coef_cutoff, zip(coefs, lambdas)))
+
+    assert coef_eigvals_pairs, "Not enough non-zero coefficients, please increase eigen_k"
+
+    if return_pairs:
+        return coef_eigvals_pairs
+
+    if fourier_transform:
+        return lambda *omegas: sum(c*math_prod(1/(1.j*omegas[j]-np.log(li[j])/dt_) for j in range(len(li))) for c, li in coef_eigvals_pairs)
+    
+    return lambda *times: sum(math_prod(c)*math_prod(li[j]**(times[j]/dt_) for j in range(len(li))) for c, li in coef_eigvals_pairs)
 
 # -- compute n-time correlations ----------------------------------------------
 

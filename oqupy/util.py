@@ -278,11 +278,73 @@ class ProgressBar(BaseProgress):
             self._step = step
         self._print_status()
 
+class ProgressBarInfo(BaseProgress):
+    """Class to display the computation progress with a nice progress bar. """
+    def __init__(self, max_value, title = None):
+        """Create a ProgressBar object. """
+        self._timer = None
+        self._start_time = time()
+        self._file = sys.stdout
+        self.max_value = max_value
+        self.title = title
+        self._length = PROGRESS_BAR_LENGTH
+        self._step = None
+        self.info = ''
+
+    def enter(self):
+        """Context enter. """
+        if self.title is not None:
+            print(self.title, file=self._file, flush=True)
+        self._timer = Timer(1.0, self._print_status)
+        self._timer.start()
+        return self
+
+    def _print_status(self):
+        if self._step is None:
+            step = 0
+        else:
+            step = self._step
+        try:
+            frac = float(step)/float(self.max_value)
+        except ZeroDivisionError:
+            frac = 1.0
+        delta_t = time() - self._start_time
+        time_string = "{:0>8}".format(str(timedelta(seconds=int(delta_t))))
+        done_int = int(frac*self._length)
+        bar_string = "\r{:5.1f}% {:4d} of {:4d} [{}{}] {} : info{}"
+        bar_string = bar_string.format(frac*100,
+                                       step,
+                                       self.max_value,
+                                       "#" * done_int,
+                                       "-" * (self._length - done_int),
+                                       time_string,
+                                       self.info)
+        self._file.write(bar_string)
+        self._file.flush()
+
+    def exit(self):
+        """Context exit. """
+        self._timer.cancel()
+        self._print_status()
+        delta_t = time() - self._start_time
+        print("\nElapsed time: {:.1f}s".format(delta_t),
+              file=self._file,
+              flush=True)
+
+    def update(self, step=None):
+        """Update the progress. """
+        self._timer.cancel()
+        self._timer = Timer(1.0, self.update)
+        self._timer.start()
+        if step is not None:
+            self._step = step
+        self._print_status()
 
 PROGRESS_DICT = {
     "silent": ProgressSilent,
     "simple": ProgressSimple,
     "bar": ProgressBar,
+    "bar-info": ProgressBarInfo
     }
 
 def get_progress(progress_type: Text = None) -> BaseProgress:
