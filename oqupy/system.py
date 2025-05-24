@@ -967,6 +967,199 @@ class SystemChain(BaseAPIClass):
 
         return nn_full_liouvillians
 
+class PeriodicTimeDependentSystem(BaseSystem):
+    r"""
+    Represents an explicitly periodic time dependent system (without any coupling to a
+    non-Markovian bath). It is possible to include (also explicitly
+    time dependent) Lindblad terms in the master equation.
+    The equations of motion for a system density matrix (without any coupling
+    to a non-Markovian bath) is then:
+
+    .. math::
+
+        \frac{d}{dt}\rho(t) = &-i [\hat{H}(t), \rho(t)] \\
+            &+ \sum_n^N \gamma_n(t) \left(
+                \hat{A}_n(t) \rho(t) \hat{A}_n(t)^\dagger
+                - \frac{1}{2} \hat{A}_n^\dagger(t) \hat{A}_n(t) \rho(t)
+                - \frac{1}{2} \rho(t) \hat{A}_n^\dagger(t) \hat{A}_n(t) \right)
+
+    with the time dependent `hamiltionian` :math:`\hat{H}(t)`, the  time
+    dependent rates `gammas` :math:`\gamma_n(t)` and the time dependent
+    `linblad_operators` :math:`\hat{A}_n(t)`.
+
+    Parameters
+    ----------
+    hamiltonian: callable
+        System-only Hamiltonian :math:`\hat{H}(t)`.
+    gammas: List(callable)
+        The rates :math:`\gamma_n(t)`.
+    lindblad_operators: list(callable)
+        The Lindblad operators :math:`\hat{A}_n(t)`.
+    name: str
+        An optional name for the system.
+    description: str
+        An optional description of the system.
+    """
+    def __init__(
+            self,
+            hamiltonian: Callable[[float], ndarray],
+            period: int,
+            gammas: \
+                Optional[List[Callable[[float], float]]] = None,
+            lindblad_operators: \
+                Optional[List[Callable[[float], ndarray]]] = None,
+            name: Optional[Text] = None,
+            description: Optional[Text] = None) -> None:
+        """Create a TimeDependentSystem object."""
+        # input check for Hamiltonian.
+        self._hamiltonian = _check_tdependent_hamiltonian(hamiltonian)
+        self.period = period
+        tmp_dimension = self._hamiltonian(1.0).shape[0]
+        # input check gammas and lindblad_operators
+        self._gammas, self._lindblad_operators = \
+            _check_tdependent_gammas_lindblad_operators(
+                    gammas,
+                    lindblad_operators)
+
+        super().__init__(tmp_dimension, name, description)
+
+    def liouvillian(self, t: float) -> ndarray:
+        r"""
+        Returns the Liouvillian super-operator :math:`\mathcal{L}(t)` with
+
+        .. math::
+
+            \mathcal{L}(t)\rho = -i [\hat{H}(t), \rho]
+                + \sum_n^N \gamma_n \left(
+                    \hat{A}_n(t) \rho \hat{A}_n^\dagger(t)
+                    - \frac{1}{2} \hat{A}_n^\dagger(t) \hat{A}_n(t) \rho
+                    - \frac{1}{2} \rho \hat{A}_n^\dagger(t) \hat{A}_n(t)
+                  \right),
+
+        with time :math:`t`.
+
+        Parameters
+        ----------
+        t: float (default = None)
+            time :math:`t`.
+
+        Returns
+        -------
+        liouvillian : ndarray
+            Liouvillian :math:`\mathcal{L}(t)` at time :math:`t`.
+        """
+        hamiltonian = self._hamiltonian(t)
+        gammas = [gamma(t) for gamma in self._gammas]
+        lindblad_operators = [l_op(t) for l_op in self._lindblad_operators]
+        return _liouvillian(hamiltonian, gammas, lindblad_operators)
+
+    def get_propagators(self, dt, start_time, subdiv_limit, epsrel):
+        """Prepare propagator functions for the system according to
+        subdiv_limit. """
+        if np.abs(self.liouvillian(start_time) - self.liouvillian(start_time + self.period*dt)).max() > 1e-8:
+            raise ValueError("Liouvillian is not periodic under this timestep")
+        
+        def wrapsteps(func):
+            def wrapper(step: int):
+                return func(step % self.period)
+            return wrapper
+
+        if not self._gammas and not self._lindblad_operators: 
+            if subdiv_limit is None:
+                # Sample Liouvillian at dt/4, 3dt/4 to make propagators for first-
+                # and second-half timesteps
+                @wrapsteps
+                @lru_cache(maxsize=self.period)
+                def propagators(step: int):
+                    """Create the system propagators (first and second half) for
+                    the time step `step`  """
+        #                 print(step, "2")
+                    t = start_time + step * dt
+                    first_step = np.kron(expm(-1j*self._hamiltonian(t+dt/4.0)*dt/2.0), expm(1j*self._hamiltonian(t+dt/4.0).T*dt/2.0))
+                    second_step = np.kron(expm(-1j*self._hamiltonian(t+dt*3.0/4.0)*dt/2.0), expm(1j*self._hamiltonian(t+dt*3.0/4.0).T*dt/2.0))
+                    return first_step, second_step
+            else:
+                # Integrate Liouvillian to make propagators for first- and
+                # second-half timesteps
+                @wrapsteps
+                @lru_cache(maxsize=self.period)
+                def propagators(step: int):
+                    """Create the system propagators (first and second half) for
+                    the time step `step`  """
+        #                 print(step)
+                    t = start_time + step * dt
+                    first_step = np.kron(expm(-1.j*integrate.quad_vec(self._hamiltonian,
+                                                         a=t,
+                                                         b=t+dt/2.0,
+                                                         epsrel=epsrel,
+                                                         limit=subdiv_limit)[0]),
+                                         expm(1j*integrate.quad_vec(self._hamiltonian,
+                                                         a=t,
+                                                         b=t+dt/2.0,
+                                                         epsrel=epsrel,
+                                                         limit=subdiv_limit)[0]).T)
+                    second_step = np.kron(expm(-1j*integrate.quad_vec(self._hamiltonian,
+                                                         a=t+dt/2.0,
+                                                         b=t+dt,
+                                                         epsrel=epsrel,
+                                                         limit=subdiv_limit)[0]),
+                                         expm(1j*integrate.quad_vec(self._hamiltonian,
+                                                         a=t+dt/2.0,
+                                                         b=t+dt,
+                                                         epsrel=epsrel,
+                                                         limit=subdiv_limit)[0]).T)
+                    return first_step, second_step
+        else:
+            if subdiv_limit is None:
+                # Sample Liouvillian at dt/4, 3dt/4 to make propagators for first-
+                # and second-half timesteps
+                @wrapsteps
+                @lru_cache(maxsize=self.period)
+                def propagators(step: int):
+                    """Create the system propagators (first and second half) for
+                    the time step `step`  """
+    #                 print(step, "2")
+                    t = start_time + step * dt
+                    first_step = expm(self.liouvillian(t+dt/4.0)*dt/2.0)
+                    second_step = expm(self.liouvillian(t+dt*3.0/4.0)*dt/2.0)
+                    return first_step, second_step
+            else:
+                # Integrate Liouvillian to make propagators for first- and
+                # second-half timesteps
+                @wrapsteps
+                @lru_cache(maxsize=self.period)
+                def propagators(step: int):
+                    """Create the system propagators (first and second half) for
+                    the time step `step`  """
+    #                 print(step)
+                    t = start_time + step * dt
+                    first_step = expm(integrate.quad_vec(self.liouvillian,
+                                                         a=t,
+                                                         b=t+dt/2.0,
+                                                         epsrel=epsrel,
+                                                         limit=subdiv_limit)[0])
+                    second_step = expm(integrate.quad_vec(self.liouvillian,
+                                                          a=t+dt/2.0,
+                                                          b=t+dt,
+                                                          epsrel=epsrel,
+                                                          limit=subdiv_limit)[0])
+                    return first_step, second_step
+        return propagators
+
+    @property
+    def hamiltonian(self) -> Callable[[float], ndarray]:
+        """The system Hamiltonian. """
+        return copy(self._hamiltonian)
+
+    @property
+    def gammas(self) -> List[Callable[[float], float]]:
+        """List of gammas. """
+        return copy(self._gammas)
+
+    @property
+    def lindblad_operators(self) -> List[Callable[[float], ndarray]]:
+        """List of lindblad operators. """
+        return copy(self._lindblad_operators)
 def _check_hamiltonian(hamiltonian) -> ndarray:
     """Input checking for a single Hamiltonian. """
     try:

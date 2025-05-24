@@ -103,7 +103,7 @@ class BathCorrelation():
 class iTEBD_TEMPO_oqupy():
     """ A class to compute and approximate the influence functional unsing iTEBD-TEMPO and compute dynamics. """
 
-    def __init__(self, s_vals: np.ndarray, delta: float, bath_correlations: BaseCorrelations, n_c: int, progress_type: Optional[Text] = None):
+    def __init__(self, s_vals: np.ndarray, delta: float, bath_correlations: BaseCorrelations, n_c: int, eta: Optional[np.ndarray] = None, progress_type: Optional[Text] = None):
         """
         :param s_vals: Real eigenvalues of the system-bath coupling operator.
         :param delta: time step for Trotter splitting.
@@ -119,7 +119,12 @@ class iTEBD_TEMPO_oqupy():
         self.nu_dim = self.s_vals.size ** 2 + 1
         self.bcf = BathCorrelation(bath_correlations)
         self.delta = delta
-        self.eta = self.bcf.compute_eta(self.n_c, delta, self.progress_type)
+        if eta is None:
+            self.eta = self.bcf.compute_eta(self.n_c, delta, self.progress_type)
+        elif len(eta) != self.n_c:
+            raise ValueError("Eta values are not conform to dkmax")
+        else:
+            self.eta = eta
         self.s_diff = np.empty((self.nu_dim - 1), dtype=np.complex128)
         self.s_sum = np.empty((self.nu_dim - 1), dtype=np.complex128)
         for nu in range(self.nu_dim - 1):

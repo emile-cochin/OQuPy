@@ -470,7 +470,7 @@ class TTInvariantProcessTensor(BaseProcessTensor):
         self._mpo_tensor=np.transpose(tebd.f[:,:-1,:],[0,2,1]) # drop the extra component and reorder the rank 3 tensor to match OQuPy
         self._first_mpo_tensor=ncon([tebd.v_l,self._mpo_tensor],[[1],[1,-1,-2]]) # construct first tensor in mpo
         self._first_mpo_tensor.shape=tuple([1]+list(self._first_mpo_tensor.shape))
-        self._first_mpo_tensor = create_delta_lastindex(self._first_mpo_tensor)
+#         self._first_mpo_tensor = create_delta_lastindex(self._first_mpo_tensor)
 
         tensor=self._first_mpo_tensor
         if transform_in is not None:
