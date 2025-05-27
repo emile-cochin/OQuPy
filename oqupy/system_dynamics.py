@@ -28,7 +28,7 @@ from oqupy.config import NpDtype, INTEGRATE_EPSREL, SUBDIV_LIMIT
 from oqupy.control import Control
 from oqupy.dynamics import Dynamics, MeanFieldDynamics
 from oqupy.process_tensor import BaseProcessTensor, TTInvariantProcessTensor
-from oqupy.system import BaseSystem, System, TimeDependentSystem, PeriodicTimeDependentSystem
+from oqupy.system import BaseSystem, System, TimeDependentSystem, PeriodicTimeDependentSystem, CompositeSystem
 from oqupy.system import ParameterizedSystem
 from oqupy.system import MeanFieldSystem
 from oqupy.operators import left_super, right_super
@@ -509,7 +509,7 @@ def _compute_dynamics_input_parse(
     else:
         check_isinstance(
             system,
-            (System, TimeDependentSystem, PeriodicTimeDependentSystem, ParameterizedSystem),
+            (System, TimeDependentSystem, PeriodicTimeDependentSystem, ParameterizedSystem, CompositeSystem),
             "system"
         )
 

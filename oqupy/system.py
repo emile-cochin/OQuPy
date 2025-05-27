@@ -1160,6 +1160,104 @@ class PeriodicTimeDependentSystem(BaseSystem):
     def lindblad_operators(self) -> List[Callable[[float], ndarray]]:
         """List of lindblad operators. """
         return copy(self._lindblad_operators)
+
+
+class CompositeSystem(BaseSystem):
+    r"""Composite system made of multiple systems.
+
+    Parameters
+    ----------
+    systems: List[BaseSystem] 
+        List of system objects
+    protocol_index: List[int]
+        List of indices of `systems` to pick the system for each interval of `protocol_times`
+    protocol_times: np.ndarray
+        Sorted array of times indicating which system should be used at each time. The system at
+        index `protocol_index[i]` is used between times `protocol_times[i]` and `protocol_times[i+1]`.
+        The two lists should be the same size. The first time is the potentially infinite `start_time`
+        and the last time is unnecessary since the last system of `protocol_index`is picked for the
+        rest of the protocol.
+    """
+    def __init__(
+            self,
+            systems: List[BaseSystem],
+            protocol_index: List[int],
+            protocol_times: np.ndarray,
+            name: Optional[Text] = None,
+            description: Optional[Text] = None) -> None:
+
+        self.systems = systems
+        self.protocol_index = protocol_index
+        self.protocol_times = protocol_times
+        tmp_dimlist = []
+        for sys in self.systems:
+            if not isinstance(sys, BaseSystem):
+                raise TypeError("`systems` should be a list of instances of `BaseSystem`.")
+            tmp_dimlist.append(sys.dimension)
+        if not tmp_dimlist or any(d != tmp_dimlist[0] for d in tmp_dimlist):
+            raise ValueError("All dimensions of the systems should be equal.")
+
+        super().__init__(tmp_dimlist[0], name, description)
+
+    def target_index(self, t):
+        idx = np.searchsorted(self.protocol_times, t, side="right") 
+        if idx == 0:
+            idx = 1
+        return self.protocol_index[idx-1]
+
+    def liouvillian(self, t: float) -> ndarray:
+        r"""
+        Returns the Liouvillian super-operator :math:`\mathcal{L}(t)` with
+
+        .. math::
+
+            \mathcal{L}(t)\rho = -i [\hat{H}(t), \rho]
+                + \sum_n^N \gamma_n \left(
+                    \hat{A}_n(t) \rho \hat{A}_n^\dagger(t)
+                    - \frac{1}{2} \hat{A}_n^\dagger(t) \hat{A}_n(t) \rho
+                    - \frac{1}{2} \rho \hat{A}_n^\dagger(t) \hat{A}_n(t)
+                  \right),
+
+        with time :math:`t`.
+
+        Parameters
+        ----------
+        t: float (default = None)
+            time :math:`t`.
+
+        Returns
+        -------
+        liouvillian : ndarray
+            Liouvillian :math:`\mathcal{L}(t)` at time :math:`t`.
+        """
+        return self.systems[self.target_index(t)].liouvillian(t)
+
+    def get_propagators(self, dt, start_time, subdiv_limit, epsrel):
+        """Prepare propagator functions for the system according to
+        subdiv_limit. """
+        
+        propagator_list = [sys.get_propagators(dt, start_time, subdiv_limit, epsrel) for sys in self.systems]
+
+        def propagators(step: int):
+            return propagator_list[self.target_index(step*dt)](step)
+
+        return propagators
+
+    @property
+    def hamiltonian(self) -> Callable[[float], ndarray]:
+        """The system Hamiltonian. """
+        raise NotImplementedError
+
+    @property
+    def gammas(self) -> List[Callable[[float], float]]:
+        """List of gammas. """
+        raise NotImplementedError
+
+    @property
+    def lindblad_operators(self) -> List[Callable[[float], ndarray]]:
+        """List of lindblad operators. """
+        raise NotImplementedError
+
 def _check_hamiltonian(hamiltonian) -> ndarray:
     """Input checking for a single Hamiltonian. """
     try:
