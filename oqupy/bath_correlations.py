@@ -413,6 +413,7 @@ class CustomSD(BaseCorrelations):
             lambda omega: CUTOFF_DICT[self.cutoff_type](omega, self.cutoff)
         self._spectral_density = \
             lambda omega: self.j_function(omega) * self._cutoff_function(omega)
+        self.a, self.b = None, None
 
         super().__init__(name, description)
 
@@ -550,6 +551,9 @@ class CustomSD(BaseCorrelations):
             The auto-correlation function :math:`C(\tau)` at time :math:`\tau`.
         """
         # real and imaginary part of the integrand
+        if self.a is None:
+            self.a = integrate.quad(lambda w: self._spectral_density(w)/w, a=self.cutoff, b=np.inf, epsrel=epsrel, limit=subdiv_limit)[0]
+
         if matsubara:
             tau = -1j * tau
         # convention is tau.imag < 0
@@ -557,11 +561,20 @@ class CustomSD(BaseCorrelations):
             check_true(
                 matsubara is False,
                 'Matsubara correlations only defined for temperature > 0')
-            def integrand(w):
-                return self._spectral_density(w) / w ** 2 * (
-                    (np.exp(-1j * w * tau) - 1) + 1j * w * tau)
+            if self.b is None:
+                self.b = integrate.quad(lambda w: self._spectral_density(w)/w**2, a=self.cutoff, b=np.inf, epsrel=epsrel, limit=subdiv_limit)[0]
+
+            def integrand_pre(w):
+                return self._spectral_density(w) / w ** 2 * (np.exp(-1j * w * tau) - 1 + 1j * w * tau)
+            def integrand_post_re(w):
+                return self._spectral_density(w) / w ** 2
+            def integrand_post_im(w):
+                return self._spectral_density(w) / w ** 2
         else:
-            def integrand(w):
+            if self.b is None:
+                self.b = integrate.quad(lambda w: self._spectral_density(w)/w**2/np.coth(w/(2*self.temperature)), a=self.cutoff, b=np.inf, epsrel=epsrel, limit=subdiv_limit)[0]
+
+            def integrand_pre(w):
                 # this is to stop overflow
                 if np.exp(-w / self.temperature) > np.finfo(float).eps:
                     inte = self._spectral_density(w) / w ** 2 \
@@ -573,19 +586,34 @@ class CustomSD(BaseCorrelations):
                     inte = self._spectral_density(w) / w ** 2 \
                         * (np.exp(-1j * w * tau) - 1 + 1j * w * tau)
                 return inte
+            def integrand_post_re(w):
+                # this is to stop overflow
+                if np.exp(-w / self.temperature) > np.finfo(float).eps:
+                    inte = self._spectral_density(w) / w ** 2 / np.tanh(w/(2*self.temperature)) 
+                else:
+                    inte = self._spectral_density(w) / w ** 2
+                return inte
+            def integrand_post_im(w):
+                return self._spectral_density(w) / w ** 2
 
-        integral = _complex_integral(integrand,
+        integral = _complex_integral(integrand_pre,
                                      a=0.0,
                                      b=self.cutoff,
                                      epsrel=epsrel,
                                      limit=subdiv_limit)
 
         if self.cutoff_type != "hard":
-            integral += _complex_integral(integrand,
-                                          a=self.cutoff,
-                                          b=np.inf,
-                                          epsrel=epsrel,
-                                          limit=subdiv_limit)
+            if tau < 1/self.cutoff:
+                integral += _complex_integral(integrand_pre,
+                                              a=self.cutoff,
+                                              b=np.inf,
+                                              epsrel=epsrel,
+                                              limit=subdiv_limit)
+
+            else:
+                re = integrate.quad(integrand_post_re, a=self.cutoff, b=np.inf, weight='cos', wvar=tau)[0]
+                im = integrate.quad(integrand_post_im, a=self.cutoff, b=np.inf, weight='sin', wvar=tau)[0]
+                integral += re - 1.j*im + 1.j*tau*self.a - self.b
         if matsubara:
             integral = integral.real
         return -integral

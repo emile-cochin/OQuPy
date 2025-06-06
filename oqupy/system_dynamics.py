@@ -720,14 +720,10 @@ def _apply_pt_mpos(current_node, current_edges, pt_mpos):
             pt_mpo_node = tn.Node(pt_mpo)
             current_node[i] ^ pt_mpo_node[0]
 #             current_node = tn.Node(np.diagonal((current_node @ pt_mpo_node).get_tensor(), axis1=-3, axis2=-1))
-#             current_node = tn.Node(np.diagonal(np.tensordot(current_node.get_tensor(), pt_mpo, axes=[0, 0]), axis1=-3, axis2=-1))
+# #             current_node = tn.Node(np.diagonal(np.tensordot(current_node.get_tensor(), pt_mpo, axes=[0, 0]), axis1=-3, axis2=-1))
             current_node_tensor = current_node.get_tensor()
             shape = current_node_tensor.shape
             dim_ho = int(np.sqrt(shape[1])/2)
-#             print(dim_ho)
-#             print(shape)
-#             print(current_node_tensor.reshape(shape[0], dim_ho, 2, dim_ho, 2).transpose((0, 1, 3, 2, 4)).reshape(shape[0], dim_ho**2, 2, 2).shape, pt_mpo.shape)
-#             print(shape)
             current_node = tn.Node(np.einsum('ijk,ilj->ljk', current_node_tensor.reshape(shape[0], dim_ho, 2, dim_ho, 2).transpose((0, 1, 3, 2, 4)).reshape(shape[0], dim_ho**2, 4), pt_mpo).reshape(pt_mpo.shape[1], dim_ho, dim_ho, 2, 2).transpose((0, 1, 3, 2, 4)).reshape(pt_mpo.shape[1], *shape[1:]))
 #             current_node = tn.Node(np.einsum('ijk,ilj->ljk', current_node_tensor.reshape(shape[0], dim_ho**2, 4), pt_mpo).reshape(pt_mpo.shape[1], *shape[1:]))
 
