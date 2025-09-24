@@ -42,9 +42,9 @@ def iTEBD_apply_gate(gate: np.ndarray, A: np.ndarray, sAB: np.ndarray, B: np.nda
     d1 = gate.shape[1]
     d2 = gate.shape[-1]
     rank_BA = sBA.shape[0]
-
     u, s_vals, v = svd(ncon([np.diag(sBA), A, np.diag(sAB), B, np.diag(sBA), gate], [[-1, 1], [1, 5, 2], [2, 4], [4, 6, 3], [3, -4], [5, -2, 6, -3]]).reshape([d1 * rank_BA, d2 * rank_BA]), full_matrices=False)
-
+    #print(np.max(np.abs(-ncon([np.diag(sBA), A, np.diag(sAB), B, np.diag(sBA), gate], [[-1, 1], [1, 5, 2], [2, 4], [4, 6, 3], [3, -4], [5, -2, 6, -3]]))))
+    #print(np.einsum_path('a,acd,d,dfg,g,cifj->aijg', sBA, A, sAB, B, sBA, gate))
     # truncate singular values
     if rtol is None:
         rank_new = min(rank, len(s_vals))
@@ -197,14 +197,14 @@ class iTEBD_TEMPO_oqupy():
         print('rank ', self.f.shape[0])
         return
 
-    def compute_f1(self, rtol: float, rank: Optional[int] = np.inf):
+    def compute_f1(self, rtol: float, rank: Optional[int] = np.inf, show_info=True):
         """
         Compute the infinite influence functional tensor f using iTEBD.
 
         :param rtol: Relative tolerance for svd compression.
         :param rank: Maximum allowed rank (bond dimension).
         """
-
+        info_list = []
         A = np.ones((1, self.nu_dim, 1))
         B = np.ones((1, self.nu_dim, 1))
         sAB = np.ones((1))
@@ -217,9 +217,14 @@ class iTEBD_TEMPO_oqupy():
                 i_tens = np.exp(-self.eta[self.n_c - k].real * np.outer(self.s_diff, self.s_diff) - 1j * self.eta[self.n_c - k].imag * np.outer(self.s_sum, self.s_diff))
 
                 if k % 2 == 0:
-                    B, sBA, A, sAB = iTEBD_apply_gate1(i_tens, (k == self.n_c), B, sBA, A, sAB, rank, rtol=rtol)
+                    B, sBA, A, sAB, info = iTEBD_apply_gate1(i_tens, (k == self.n_c), B, sBA, A, sAB, rank, rtol=rtol)
                 else:
-                    A, sAB, B, sBA = iTEBD_apply_gate1(i_tens, (k == self.n_c), A, sAB, B, sBA, rank, rtol=rtol)
+                    A, sAB, B, sBA, info = iTEBD_apply_gate1(i_tens, (k == self.n_c), A, sAB, B, sBA, rank, rtol=rtol)
+
+                if show_info:
+                    info_str = f' d1:{info[0]}/{self.nu_dim}, d2:{info[1]}/{self.nu_dim}, chi:{info[2]}'
+                    prog_bar.info = info_str
+                    info_list.append(info)
 
                 if rank_is_one:
                     if np.all([sAB.shape[0] == 1, sAB.shape[-1] == 1, sBA.shape[0] == 1, sBA.shape[-1] == 1]):
@@ -247,7 +252,7 @@ class iTEBD_TEMPO_oqupy():
         self.v_l = v_l[:, 0] / (v_l[:, 0] @ v_r[:, 0])
 
         print('rank ', self.f.shape[0])
-        return
+        return info_list
 
     def compute_f2(self, rtol: float, rtol2: float, rtol3: float, rank: Optional[int] = np.inf):
         """
@@ -317,6 +322,64 @@ class iTEBD_TEMPO_oqupy():
         for i in range(i_path.size):
             val = val @ self.f[:, i_path[i], :]
         return val @ self.v_r
+
+    def compute_f3(self, rtol: float, rtol2, rtol3, rank: Optional[int] = np.inf, show_info=True):
+        """
+        Compute the infinite influence functional tensor f using iTEBD.
+
+        :param rtol: Relative tolerance for svd compression.
+        :param rank: Maximum allowed rank (bond dimension).
+        """
+        info_list = []
+        A = np.ones((1, self.nu_dim, 1))
+        B = np.ones((1, self.nu_dim, 1))
+        sAB = np.ones((1))
+        sBA = np.ones((1))
+        preA, preB = None, None
+        rank_is_one = True
+
+        progress = get_progress(self.progress_type)
+        with progress(self.n_c, '--> Building influence functional:') as prog_bar:
+            for k in range(1, self.n_c + 1):
+                i_tens = np.exp(-self.eta[self.n_c - k].real * np.outer(self.s_diff, self.s_diff) - 1j * self.eta[self.n_c - k].imag * np.outer(self.s_sum, self.s_diff))
+                if k % 2 == 0:
+                    B, sBA, A, sAB, preB, preA, info = iTEBD_apply_gate3(i_tens, (k == self.n_c), B, sBA, A, sAB, preB, preA, rank, rtol=rtol, rtol2=rtol2, rtol3=rtol3)
+                else:
+                    A, sAB, B, sBA, preA, preB, info = iTEBD_apply_gate3(i_tens, (k == self.n_c), A, sAB, B, sBA, preA, preB, rank, rtol=rtol, rtol2=rtol2, rtol3=rtol3)
+
+                if show_info:
+                    info_str = f' d1:{info[0]}/{self.nu_dim}, d2:{info[1]}/{self.nu_dim}, chi:{info[2]}'
+                    prog_bar.info = info_str
+                    info_list.append(info)
+
+                if rank_is_one:
+                    if np.all([sAB.shape[0] == 1, sAB.shape[-1] == 1, sBA.shape[0] == 1, sBA.shape[-1] == 1]):
+                        # reset to initial mps if rank is still one
+                        sAB = np.ones((1))
+                        sBA = np.ones((1))
+                        A = np.ones((1, self.nu_dim, 1))
+                        B = np.ones((1, self.nu_dim, 1))
+                        preA, preB = None, None
+                    else:
+                        rank_is_one = False
+                        self.n_c_eff = self.n_c - k + 1
+                        if k == 1:
+                            print('Warning: the memory cutoff n_c may be too small for the given rtol value. The algorithm may become unstable and inaccurate. It is recommended to increase n_c until this message does no longer appear.')
+                prog_bar.update(k)
+        self.f = np.squeeze(ncon([np.diag(sAB), B, np.diag(sBA), A], [[-1, 1], [1, -2, 2], [2, 3], [3, -3, -4]]))
+
+        if sAB.shape[0] == 1:
+            # handle trivial f
+            self.f = np.ones((1, self.nu_dim, 1))
+
+        # compute f[:,-1,:]^\inf = v_r * v_l^T using Lanczos
+        w, v_r = eigs(self.f[:, -1, :], 1, which='LR')
+        w, v_l = eigs(self.f[:, -1, :].T, 1, which='LR')
+        self.v_r = v_r[:, 0]
+        self.v_l = v_l[:, 0] / (v_l[:, 0] @ v_r[:, 0])
+
+        print('rank ', self.f.shape[0])
+        return info_list
 
     def get_exact(self, i_path: np.ndarray) -> complex:
         """ Computes the exact influence of a single path with indices i_path. 
@@ -474,7 +537,7 @@ def iTEBD_apply_gate_modif(gate: np.ndarray, endbool, preA: np.ndarray, preB: np
 
     return A, sAB, B, sBA, preA, preB, path, info
 
-def iTEBD_apply_gate1(gate: np.ndarray, endbool: bool, A: np.ndarray, sAB: np.ndarray, B: np.ndarray, sBA: np.ndarray, rank: int, rtol: float, ctol: Optional[float] = 1e-13):
+def iTEBD_apply_gate1(gate: np.ndarray, endbool, A: np.ndarray, sAB: np.ndarray, B: np.ndarray, sBA: np.ndarray, rank: int, rtol: float, ctol: Optional[float] = 1e-13):
     """
     single iTEBD step, scheme adapted from https://www.tensors.net/mps
     :param gate: TEBD gate for A-B link
@@ -496,15 +559,14 @@ def iTEBD_apply_gate1(gate: np.ndarray, endbool: bool, A: np.ndarray, sAB: np.nd
     sBA[np.abs(sBA) < ctol] = ctol
 
     # MPS - gate contraction
-    d1 = gate.shape[0]
-    d2 = gate.shape[1]
+    d1 = gate.shape[1]
+    d2 = gate.shape[-1]
     rank_BA = sBA.shape[0]
-    
     if endbool:
         d1 = 1
-        u, s_vals, v = svd(np.einsum("c,cbe,e,ebg,g,a,j->cabg", sBA, A, sAB, B, sBA, np.ones((1)), np.diagonal(gate)).reshape([d1 * rank_BA, d2 * rank_BA]), full_matrices=False)
+        u, s_vals, v = svd(np.einsum('a,acd,d,dcg,g,i,c->aicg', sBA, A, sAB, B, sBA, np.ones((1)), np.diagonal(gate)).reshape([d1 * rank_BA, d2 * rank_BA]), full_matrices=False)
     else:
-        u, s_vals, v = svd(np.einsum("c,cie,e,eag,g,ai->caig", sBA, A, sAB, B, sBA, gate).reshape([d1 * rank_BA, d2 * rank_BA]), full_matrices=False)
+        u, s_vals, v = svd(np.einsum('a,acd,d,dfg,g,fc->afcg', sBA, A, sAB, B, sBA, gate).reshape([d1 * rank_BA, d2 * rank_BA]), full_matrices=False)
 
     # truncate singular values
     if rtol is None:
@@ -523,5 +585,84 @@ def iTEBD_apply_gate1(gate: np.ndarray, endbool: bool, A: np.ndarray, sAB: np.nd
     # new weights
     sAB = s_vals[:rank_new]
 
-    return A, sAB, B, sBA
+    return A, sAB, B, sBA, (d1, d2, rank_new)
 
+def iTEBD_apply_gate3(gate: np.ndarray, endbool, A: np.ndarray, sAB: np.ndarray, B: np.ndarray, sBA: np.ndarray, preA, preB, rank: int, rtol: float, rtol2, rtol3, ctol: Optional[float] = 1e-13):
+    """
+    single iTEBD step, scheme adapted from https://www.tensors.net/mps
+    :param gate: TEBD gate for A-B link
+    :param A: A tensor (left)
+    :param sAB: weight for A-B link
+    :param B: B tensor (right)
+    :param sBA: weight for B-A link
+    :param rank: maximum rank in svd compression
+    :param rtol: relative error for svd compression
+    :param ctol: cutoff for weights sBA which need to be inverted
+    :return: new tensors and weights A, sAB, B, sBA
+    """
+
+    # renormalize weights
+    sAB = sAB * norm(sBA)
+    sBA = sBA / norm(sBA)
+
+    # ensure weights are above tolerance (needed for inversion)
+    sBA[np.abs(sBA) < ctol] = ctol
+
+    # MPS - gate contraction
+    d1 = gate.shape[1]
+    d2 = gate.shape[-1]
+    rank_BA = sBA.shape[0]
+    if endbool:
+        d1 = 1
+        if preA is not None and preB is not None:
+            A, B = np.einsum('abc,eb->aec', A, preA), np.einsum('abc,eb->aec', B, preB)
+        u, s_vals, v = svd(np.einsum('a,acd,d,dcg,g,i,c->aicg', sBA, A, sAB, B, sBA, np.ones((1)), np.diagonal(gate)).reshape([d1 * rank_BA, d2 * rank_BA]), full_matrices=False)
+        d1, d2 = d2, d1
+        u1, u2 = None, None
+    else:
+        U1, S, U2 = svd(gate, full_matrices=False)
+        s_vals_sum = np.cumsum(S)/np.sum(S)
+        rank_rtol = np.searchsorted(s_vals_sum, 1 - rtol2) + 1
+        rank_new = min(len(S), rank_rtol)
+        U1, S, U2 = U1[:, :rank_new], S[:rank_new], U2[:rank_new, :]
+
+        if preA is not None and preB is not None:
+#             A, B = np.einsum('abc,eb->aec', A, preA), np.einsum('abc,eb->aec', B, preB)
+            block1, block2 = np.einsum('a,aed,ce,d,bc->cabd', sBA, A, preA, np.sqrt(sAB), U2), np.einsum('d,deg,fe,g,fb->fdbg', np.sqrt(sAB), B, preB, sBA, U1)
+        else:
+            block1, block2 = np.einsum('a,acd,d,bc->cabd', sBA, A, np.sqrt(sAB), U2), np.einsum('d,dfg,g,fb->fdbg', np.sqrt(sAB), B, sBA, U1)
+
+        u1, s1, v1 = svd(block1.reshape(block1.shape[0], -1), full_matrices=False)
+        s1_sum = np.cumsum(s1)/np.sum(s1)
+        rank_rtol = np.searchsorted(s1_sum, 1 - rtol3) + 1
+        rank_new = min(len(s1), rank_rtol)
+        u1, s1, v1 = u1[:, :rank_new], s1[:rank_new], v1[:rank_new, :]
+        block1 = (np.diag(s1) @ v1).reshape((-1, *block1.shape[1:]))
+#         block1 = np.einsum('eabd,ce->cabd', (np.diag(s1) @ v1).reshape((-1, *block1.shape[1:])), u1)
+        u2, s2, v2 = svd(block2.reshape(block2.shape[0], -1), full_matrices=False)
+        s2_sum = np.cumsum(s2)/np.sum(s2)
+        rank_rtol = np.searchsorted(s2_sum, 1 - rtol3) + 1
+        rank_new = min(len(s2), rank_rtol)
+        u2, s2, v2 = u2[:, :rank_new], s2[:rank_new], v2[:rank_new, :]
+        block2 = (np.diag(s2) @ v2).reshape((-1, *block2.shape[1:]))
+#         block2 = np.einsum('edbg,fe->fdbg', (np.diag(s2) @ v2).reshape((-1, *block2.shape[1:])), u2)
+        d1, d2 = block1.shape[0], block2.shape[0]
+        u, s_vals, v = svd(np.einsum('cabd,fdbg,b->afcg', block1, block2, S).reshape([d2 * rank_BA, d1 * rank_BA]), full_matrices=False)
+    # truncate singular values
+    if rtol is None:
+        rank_new = min(rank, len(s_vals))
+    else:
+        s_vals_sum = np.cumsum(s_vals) / np.sum(s_vals)
+        rank_rtol = np.searchsorted(s_vals_sum, 1 - rtol) + 1
+        rank_new = min(rank, len(s_vals), rank_rtol)
+    u = u[:, :rank_new].reshape(sBA.shape[0], d2 * rank_new)
+    v = v[:rank_new, :].reshape(rank_new * d1, rank_BA)
+
+    # factor out sAB weights from A and B
+    A = (np.diag(1 / sBA) @ u).reshape(sBA.shape[0], d2, rank_new)
+    B = (v @ np.diag(1 / sBA)).reshape(rank_new, d1, rank_BA)
+    
+    # new weights
+    sAB = s_vals[:rank_new]
+
+    return A, sAB, B, sBA, u2, u1, (d1, d2, rank_new)
