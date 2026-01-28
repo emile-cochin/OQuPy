@@ -3,6 +3,8 @@
 # Original code from https://github.com/val-link/iTEBD-TEMPO.git
 # Modified by Paul Eastham (easthamp@tcd.ie) so that the iTEBD-TEMPO class uses the OQuPy BathCorrelations class 
 # to define the bath correlations rather than the bath correlation function itself. 
+# Modified by Emile Cochin so that the iTEBD step is optimized for large Hilbert space sizes
+
 from typing import Text
 
 import numpy as np
@@ -639,6 +641,12 @@ def iTEBD_apply_gate3(gate: np.ndarray, endbool, A: np.ndarray, sAB: np.ndarray,
         u1, s1, v1 = u1[:, :rank_new], s1[:rank_new], v1[:rank_new, :]
         block1 = (np.diag(s1) @ v1).reshape((-1, *block1.shape[1:]))
 #         block1 = np.einsum('eabd,ce->cabd', (np.diag(s1) @ v1).reshape((-1, *block1.shape[1:])), u1)
+#         _u1, _s1, _v1 = svd(block1.copy().transpose((1, 0, 2, 3)).reshape(block1.shape[1], -1), full_matrices=False)
+#         _s1_sum = np.cumsum(_s1)/np.sum(_s1)
+#         _rank_rtol = np.searchsorted(_s1_sum, 1 - 1e-2) + 1
+#         _rank_new = min(len(_s1), _rank_rtol)
+#         print(f"{_rank_new}/{block1.shape[1]}")
+
         u2, s2, v2 = svd(block2.reshape(block2.shape[0], -1), full_matrices=False)
         s2_sum = np.cumsum(s2)/np.sum(s2)
         rank_rtol = np.searchsorted(s2_sum, 1 - rtol3) + 1
