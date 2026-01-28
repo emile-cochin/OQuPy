@@ -572,7 +572,7 @@ class CustomSD(BaseCorrelations):
                 return self._spectral_density(w) / w ** 2
         else:
             if self.b is None:
-                self.b = integrate.quad(lambda w: self._spectral_density(w)/w**2/np.coth(w/(2*self.temperature)), a=self.cutoff, b=np.inf, epsrel=epsrel, limit=subdiv_limit)[0]
+                self.b = integrate.quad(lambda w: self._spectral_density(w)/w**2/np.tanh(w/(2*self.temperature)), a=self.cutoff, b=np.inf, epsrel=epsrel, limit=subdiv_limit)[0]
 
             def integrand_pre(w):
                 # this is to stop overflow
