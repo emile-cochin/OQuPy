@@ -1,3 +1,17 @@
+> [!IMPORTANT]
+This branch is a fork of the OQuPy package used to develop the code for the article [arXiv:2603.06840](https://arxiv.org/abs/2603.06840) (see citation below). In particular, the modified iTEBD algorithm is implemented in the `compute_f_enhanced` function in `oqupy/iTEBD_tempo.py`.
+
+```bibtex
+@misc{cochin2026efficientconstructiontimeinvariantprocess,
+      title={Efficient construction of time-invariant process tensors for simulating high-dimensional non-Markovian open quantum systems}, 
+      author={Émile Cochin and Jonathan Keeling and Brendon W. Lovett and Alex W. Chin},
+      year={2026},
+      eprint={2603.06840},
+      archivePrefix={arXiv},
+      primaryClass={quant-ph},
+      url={https://arxiv.org/abs/2603.06840}, 
+}
+```
 
 # OQuPy: Open Quantum Systems in Python
 

@@ -56,7 +56,7 @@ from oqupy.tempo import influence_matrix
 from oqupy.operators import left_right_super
 from oqupy.util import get_progress
 
-from oqupy.iTEBD_TEMPO_useoqupybath import iTEBD_TEMPO_oqupy
+from oqupy.iTEBD_tempo import iTEBD_TEMPO
 from oqupy.process_tensor import TTInvariantProcessTensor
 
 class TTITempo():
@@ -135,7 +135,7 @@ class TTITempo():
             transform_in = None
             transform_out = None
         
-        myitebd = iTEBD_TEMPO_oqupy(np.diagonal(self._bath.coupling_operator), self._parameters.dt, 
+        myitebd = iTEBD_TEMPO(np.diagonal(self._bath.coupling_operator), self._parameters.dt, 
                                                 self._bath.correlations, self._parameters.dkmax)
         myitebd.compute_f(self._parameters.epsrel,self._rank)
         

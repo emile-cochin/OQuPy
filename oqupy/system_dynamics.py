@@ -713,10 +713,18 @@ def _apply_pt_mpos(current_node, current_edges, pt_mpos):
     """
     for i, pt_mpo in enumerate(pt_mpos):
         if pt_mpo is None:
-            continue
+            continue 
         if len(pt_mpo.shape) == 3:
             current_node_tensor = current_node.get_tensor()
-            current_node = tn.Node(np.einsum('ij,ilj->lj', current_node_tensor, pt_mpo))
+            shape = current_node_tensor.shape
+            if shape[1] == pt_mpo.shape[2]:
+                current_node = tn.Node(np.einsum('ij,ilj->lj', current_node_tensor, pt_mpo))
+            elif shape[1] % pt_mpo.shape[2] == 0:
+                dim_left = int(np.sqrt(shape[1] // pt_mpo.shape[2]))
+                dim_pt = int(np.sqrt(shape[1])/dim_left)
+                current_node = tn.Node(np.einsum('ijk,ilj->ljk', current_node_tensor.reshape(shape[0], dim_pt, dim_left, dim_pt, dim_left).transpose((0, 1, 3, 2, 4)).reshape(shape[0], dim_pt**2, dim_left**2), pt_mpo).reshape(pt_mpo.shape[1], dim_pt, dim_pt, dim_left, dim_left).transpose((0, 1, 3, 2, 4)).reshape(pt_mpo.shape[1], *shape[1:]))
+            else:
+                raise ValueError
             current_edges = [current_node[j] for j in range(len(current_node.shape))]
         else:
             pt_mpo_node = tn.Node(pt_mpo)
