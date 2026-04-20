@@ -95,9 +95,9 @@ class iTEBD_TEMPO():
                 i_tens = np.exp(-self.eta[self.n_c - k].real * np.outer(self.s_diff, self.s_diff) - 1j * self.eta[self.n_c - k].imag * np.outer(self.s_sum, self.s_diff))
 
                 if k % 2 == 0:
-                    B, sBA, A, sAB, info = iTEBD_apply_gate1(i_tens, (k == self.n_c), B, sBA, A, sAB, rank, rtol=rtol)
+                    B, sBA, A, sAB, info = iTEBD_apply_gate(i_tens, (k == self.n_c), B, sBA, A, sAB, rank, rtol=rtol)
                 else:
-                    A, sAB, B, sBA, info = iTEBD_apply_gate1(i_tens, (k == self.n_c), A, sAB, B, sBA, rank, rtol=rtol)
+                    A, sAB, B, sBA, info = iTEBD_apply_gate(i_tens, (k == self.n_c), A, sAB, B, sBA, rank, rtol=rtol)
 
                 if show_info:
                     info_str = f' d1:{info[0]}/{self.nu_dim}, d2:{info[1]}/{self.nu_dim}, chi:{info[2]}'
