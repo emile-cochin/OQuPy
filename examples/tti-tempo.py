@@ -1,11 +1,5 @@
-# %%
-# Demonstration of iTEBD within OQuPy
-# Uses the original iTEBD code by Valentin Link from https://github.com/val-link/iTEBD-TEMPO.git.
-# Minimally modified by Paul Eastham to take a bath correlation object from OQuPy.
-# The resulting object can turned into a new proces tensor subclass, TTInvariantProcessTensor, which should function as all other PTs in OQuPy
-# Todo: fully integrate the creation of iTEBD process tensors so we can skip calls to iTEBD_TEMPO_oqupy class.
+#!/usr/bin/env python
 
-# %%
 import sys
 sys.path.insert(0,'..')
 
