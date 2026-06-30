@@ -472,16 +472,17 @@ class TTInvariantProcessTensor(BaseProcessTensor):
         self._first_mpo_tensor.shape=tuple([1]+list(self._first_mpo_tensor.shape))
 #         self._first_mpo_tensor = create_delta_lastindex(self._first_mpo_tensor)
 
-        tensor=self._first_mpo_tensor
-        if transform_in is not None:
-            tensor = np.dot(np.moveaxis(tensor, -2, -1),transform_in.T)
-            tensor = np.moveaxis(tensor, -1, -2)
-        if transform_out is not None:
-            tensor = np.dot(tensor, transform_out)
+        if transform_in is not None or transform_out is not None:
+            tensor = create_delta_lastindex(self._first_mpo_tensor)
+            if transform_in is not None:
+                tensor = np.dot(np.moveaxis(tensor, -2, -1),transform_in.T)
+                tensor = np.moveaxis(tensor, -1, -2)
+            if transform_out is not None:
+                tensor = np.dot(tensor, transform_out)
         self._first_mpo_tensor=tensor
 
         if not (transform_in is None and transform_out is None and opti):
-            tensor = create_delta_lastindex(self._mpo_tensor) 
+            tensor = create_delta_lastindex(self._mpo_tensor)
             if transform_in is not None:
                 tensor = np.dot(np.moveaxis(tensor, -2, -1),transform_in.T)
                 tensor = np.moveaxis(tensor, -1, -2)
