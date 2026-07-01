@@ -479,7 +479,7 @@ class TTInvariantProcessTensor(BaseProcessTensor):
                 tensor = np.moveaxis(tensor, -1, -2)
             if transform_out is not None:
                 tensor = np.dot(tensor, transform_out)
-        self._first_mpo_tensor=tensor
+            self._first_mpo_tensor=tensor
 
         if not (transform_in is None and transform_out is None and opti):
             tensor = create_delta_lastindex(self._mpo_tensor)

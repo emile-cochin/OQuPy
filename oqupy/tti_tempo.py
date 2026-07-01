@@ -89,6 +89,8 @@ class TTITempo():
             bath: Bath,
             start_time: float,
             parameters: TempoParameters,
+            rtol2: Optional[float] = 1e-7,
+            rtol3: Optional[float] = 1e-7,
             rank: Optional[int] = np.inf,
             name: Optional[Text] = None,
             description: Optional[Text] = None) -> None:
@@ -98,6 +100,8 @@ class TTITempo():
         self._bath = bath
         self._dimension = self._bath.dimension
         self._correlations = self._bath.correlations
+        self.rtol2 = rtol2
+        self.rtol3 = rtol3
 
         # super().__init__(name, description)
 
@@ -137,13 +141,14 @@ class TTITempo():
         
         myitebd = iTEBD_TEMPO_oqupy(np.diagonal(self._bath.coupling_operator), self._parameters.dt, 
                                                 self._bath.correlations, self._parameters.dkmax)
-        myitebd.compute_f(self._parameters.epsrel,self._rank)
+        myitebd.compute_f3(self._parameters.epsrel,self.rtol2,self.rtol3,self._rank)
         
         self._process_tensor = TTInvariantProcessTensor(myitebd,
             transform_in=transform_in,
             transform_out=transform_out,
             name=self._name,
-            description=self._description)
+            description=self._description,
+            opti=True)
         
     def get_process_tensor(self):
         return self._process_tensor
